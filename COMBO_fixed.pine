@@ -1,0 +1,426 @@
+// ─────────────────────────────────────────────────────────────
+//  COMBO : 5AM Cy System + Gold K Dual Box + MTF EMA Levels
+//  1) 5AM Cy System  : วาดระดับ Cy จากราคาเปิด/ปิด ณ 05:00 AM พร้อม High/Low/Range
+//  2) Gold K Dual Box : กรอบ TOP/BOT จาก High-Low 12 แท่งล่าสุด เลือกขนาด 1K-100K
+//  3) MTF EMA Levels  : แสดงระดับ EMA 12/26/89/200/720 ทุก TF (M1→W1) พร้อมป้าย
+//  4) EMA on Chart    : Plot เส้น EMA 12/26/89/200/720 บนกราฟปัจจุบัน
+//  • Toggle เปิด/ปิดแต่ละเส้นได้ | ปรับ offset ป้ายได้
+//
+//  [แก้] Gold K Dual Box: Lock High/Low Price แสดงตำแหน่ง real-time ในกรอบ
+// ─────────────────────────────────────────────────────────────
+//@version=6
+indicator("COMBO : 5AM Cy System + Gold K Dual Box + MTF EMA Levels", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+////////////////////////////////////////////////////////////////////////////////
+// ===================== 0) Gold K Dual Box (inputs บนสุด) =====================
+////////////////////////////////////////////////////////////////////////////////
+kSelect     = input.string("5K", "Box Range", options=["1K","1.5K","2.5K","3.5K","5K","7.5K","10K","15K","30K","50K","100K"], group="Gold K Dual Box")
+showTopBox  = input.bool(true,  "Show TOP Box",    group="Gold K Dual Box")
+showBotBox  = input.bool(true,  "Show BOTTOM Box", group="Gold K Dual Box")
+lockBox     = input.bool(false, "🔒 Lock Box (ใช้ Lock High/Low ด้านล่าง)",     group="Gold K Dual Box")
+lockHighVal = input.float(0.0,  "Lock High Price → กรอบ TOP จะยึดราคานี้", minval=0, group="Gold K Dual Box")
+lockLowVal  = input.float(0.0,  "Lock Low Price  → กรอบ BOT จะยึดราคานี้", minval=0, group="Gold K Dual Box")
+
+////////////////////////////////////////////////////////////////////////////////
+// ===================== 1) 5AM Cy System ======================================
+////////////////////////////////////////////////////////////////////////////////
+levels = array.from(30,50,75,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000)
+tz = "Asia/Bangkok"
+
+startHour    = input.int(5, "Start Time (Hour)", options=[5,6], group="5AM Cy System")
+currentHour  = hour(time, tz)
+currentMin   = minute(time, tz)
+isStartTime  = (currentHour == startHour and currentMin <= 2)
+
+baseMode     = input.string("Open", "Base Price Mode", options=["Open","Prev Close"], group="5AM Cy System")
+cyRangeGroup = input.string("0-100", "Cy Range Group", options=["0-5","0-10","0-15","0-30","0-50","0-100"], group="5AM Cy System")
+
+int maxRangeLock = 1000
+if cyRangeGroup == "0-5"
+    maxRangeLock := 50
+else if cyRangeGroup == "0-10"
+    maxRangeLock := 100
+else if cyRangeGroup == "0-15"
+    maxRangeLock := 150
+else if cyRangeGroup == "0-30"
+    maxRangeLock := 300
+else if cyRangeGroup == "0-50"
+    maxRangeLock := 500
+
+leadBars    = input.int(5, "Line Lead (Bars)", minval=0, maxval=50, group="5AM Cy System")
+cyUpColor   = input.color(color.green,  "Cy Up Color",            group="5AM Cy System")
+cyDnColor   = input.color(color.red,    "Cy Down Color",          group="5AM Cy System")
+baseColor   = input.color(color.yellow, "Base Line Color",        group="5AM Cy System")
+hiColor     = input.color(color.blue,   "High Line Color",        group="5AM Cy System")
+loColor     = input.color(color.orange, "Low Line Color",         group="5AM Cy System")
+lineWidth   = input.int(2, "Line Width", minval=1, maxval=5,      group="5AM Cy System")
+labelBg     = input.color(color.black,  "Label Background Color", group="5AM Cy System")
+labelText   = input.color(color.white,  "Label Text Color",       group="5AM Cy System")
+labelSizeIn = input.string("small", "Label Size", options=["tiny","small","normal","large"], group="5AM Cy System")
+labelSize   = size.small
+if labelSizeIn == "tiny"
+    labelSize := size.tiny
+else if labelSizeIn == "normal"
+    labelSize := size.normal
+else if labelSizeIn == "large"
+    labelSize := size.large
+
+showZone  = input.bool(true,  "Show Cy Zone",  group="5AM Cy Zone")
+zoneSize  = input.float(5.0,  "Zone Size (±)", minval=0.1, step=0.5, group="5AM Cy Zone")
+zoneColor = input.color(color.new(color.yellow, 94), "Zone Color", group="5AM Cy Zone")
+
+var float  basePrice      = na
+var float  hi             = na
+var float  lo             = na
+var int    startBar       = na
+var bool   sessionStarted = false
+var line[]  cyLines  = array.new_line()
+var label[] cyLabels = array.new_label()
+var box[]   cyZones  = array.new_box()
+var line  hiLine     = na
+var line  loLine     = na
+var label hiLabel    = na
+var label loLabel    = na
+var label rangeLabel = na
+
+noColor = color.new(color.white, 100)
+
+if isStartTime and bar_index > 0 and not sessionStarted
+    for l in cyLines
+        line.delete(l)
+    for lb in cyLabels
+        label.delete(lb)
+    for bx in cyZones
+        box.delete(bx)
+    array.clear(cyLines)
+    array.clear(cyLabels)
+    array.clear(cyZones)
+    line.delete(hiLine)
+    line.delete(loLine)
+    label.delete(hiLabel)
+    label.delete(loLabel)
+    label.delete(rangeLabel)
+
+    basePrice := baseMode == "Prev Close" ? close[1] : open
+    hi        := high
+    lo        := low
+    startBar  := bar_index
+    sessionStarted := true
+
+    array.push(cyLines,  line.new(startBar, basePrice, startBar, basePrice, color=baseColor, style=line.style_dotted, width=lineWidth))
+    array.push(cyLabels, label.new(startBar, basePrice, "Base  " + str.tostring(basePrice, format.mintick), style=label.style_label_right, textcolor=labelText, color=labelBg, size=labelSize))
+    if showZone
+        array.push(cyZones,  box.new(left=startBar, right=startBar + 1, top=basePrice + zoneSize, bottom=basePrice - zoneSize, border_color=noColor, bgcolor=zoneColor, extend=extend.right))
+        array.push(cyLabels, label.new(startBar, basePrice + zoneSize, str.tostring(basePrice + zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+        array.push(cyLabels, label.new(startBar, basePrice - zoneSize, str.tostring(basePrice - zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+
+    for i = 0 to array.size(levels) - 1
+        dist = array.get(levels, i)
+        if dist <= maxRangeLock
+            pUp = basePrice + dist
+            pDn = basePrice - dist
+            txt = "Cy" + str.tostring(dist / 10) + "K"
+            array.push(cyLines,  line.new(startBar, pUp, startBar, pUp, color=cyUpColor, style=line.style_dotted, width=lineWidth))
+            array.push(cyLines,  line.new(startBar, pDn, startBar, pDn, color=cyDnColor, style=line.style_dotted, width=lineWidth))
+            array.push(cyLabels, label.new(startBar, pUp, txt + "  " + str.tostring(pUp, format.mintick), style=label.style_label_right, textcolor=labelText, color=labelBg, size=labelSize))
+            array.push(cyLabels, label.new(startBar, pDn, txt + "  " + str.tostring(pDn, format.mintick), style=label.style_label_right, textcolor=labelText, color=labelBg, size=labelSize))
+            if showZone
+                array.push(cyZones,  box.new(left=startBar, right=startBar + 1, top=pUp + zoneSize, bottom=pUp - zoneSize, border_color=noColor, bgcolor=zoneColor, extend=extend.right))
+                array.push(cyLabels, label.new(startBar, pUp + zoneSize, str.tostring(pUp + zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+                array.push(cyLabels, label.new(startBar, pUp - zoneSize, str.tostring(pUp - zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+                array.push(cyZones,  box.new(left=startBar, right=startBar + 1, top=pDn + zoneSize, bottom=pDn - zoneSize, border_color=noColor, bgcolor=zoneColor, extend=extend.right))
+                array.push(cyLabels, label.new(startBar, pDn + zoneSize, str.tostring(pDn + zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+                array.push(cyLabels, label.new(startBar, pDn - zoneSize, str.tostring(pDn - zoneSize, format.mintick), style=label.style_label_right, textcolor=labelText, color=noColor, size=size.tiny))
+
+if sessionStarted and currentHour != startHour
+    sessionStarted := false
+
+if not na(basePrice)
+    for l in cyLines
+        line.set_xy2(l, bar_index + leadBars, line.get_y1(l))
+
+if not na(basePrice)
+    hi := math.max(hi, high)
+    lo := math.min(lo, low)
+    line.delete(hiLine)
+    line.delete(loLine)
+    label.delete(hiLabel)
+    label.delete(loLabel)
+    label.delete(rangeLabel)
+
+    hiLine     := line.new(bar_index - 1, hi, bar_index, hi, extend=extend.right, color=hiColor, width=lineWidth)
+    loLine     := line.new(bar_index - 1, lo, bar_index, lo, extend=extend.right, color=loColor, width=lineWidth)
+    hiLabel    := label.new(bar_index + 1, hi, "High " + str.tostring(hi), style=label.style_label_right, textcolor=color.white, color=color.black, size=labelSize)
+    loLabel    := label.new(bar_index + 1, lo, "Low "  + str.tostring(lo), style=label.style_label_right, textcolor=color.white, color=color.black, size=labelSize)
+    rangePts    = hi - lo
+    rangeLabel := label.new(bar_index + 1, hi + rangePts * 0.1, "Range " + str.tostring(rangePts / 10) + " k", style=label.style_label_right, textcolor=color.rgb(7,7,7), color=color.rgb(255,215,0), size=labelSize)
+
+alertcondition(close > hi[1], "Break High", "Price Break High")
+alertcondition(close < lo[1], "Break Low",  "Price Break Low")
+
+////////////////////////////////////////////////////////////////////////////////
+// ===================== 2) Gold K Dual Box (แก้ใหม่) ==========================
+////////////////////////////////////////////////////////////////////////////////
+barsWidth   = 12
+forwardBars = 15
+labelOffset = 7
+
+priceRange = 1000.0
+if kSelect == "1K"
+    priceRange := 10.0
+else if kSelect == "1.5K"
+    priceRange := 15.0
+else if kSelect == "2.5K"
+    priceRange := 25.0
+else if kSelect == "3.5K"
+    priceRange := 35.0
+else if kSelect == "5K"
+    priceRange := 50.0
+else if kSelect == "7.5K"
+    priceRange := 75.0
+else if kSelect == "10K"
+    priceRange := 100.0
+else if kSelect == "15K"
+    priceRange := 150.0
+else if kSelect == "30K"
+    priceRange := 300.0
+else if kSelect == "50K"
+    priceRange := 500.0
+
+currentHigh = ta.highest(high, barsWidth)
+currentLow  = ta.lowest(low,  barsWidth)
+
+// ─── Logic ใหม่: ถ้ากรอก Lock High/Low > 0 → ใช้ทันทีโดยไม่ต้องติ๊ก lockBox ───
+hasLockHigh = lockHighVal > 0
+hasLockLow  = lockLowVal  > 0
+usedHigh    = hasLockHigh ? lockHighVal : currentHigh
+usedLow     = hasLockLow  ? lockLowVal  : currentLow
+
+topColor     = color.rgb(255, 215, 0)
+botColor     = color.rgb(0, 180, 255)
+lockColor    = color.rgb(255, 100, 100)   // สีแดงสำหรับ marker ราคาที่ lock
+leftBar      = bar_index - barsWidth + 1
+rightBar     = bar_index + forwardBars
+labelBar     = rightBar + labelOffset
+topBoxTop    = usedHigh
+topBoxBottom = usedHigh - priceRange
+botBoxTop    = usedLow + priceRange
+botBoxBottom = usedLow
+
+// คำนวณตำแหน่ง close ภายใน กรอบ (0% = ล่างกรอบ, 100% = บนกรอบ)
+topBoxPct  = topBoxTop != topBoxBottom ? (close - topBoxBottom) / (topBoxTop - topBoxBottom) * 100 : na
+botBoxPct  = botBoxTop != botBoxBottom ? (close - botBoxBottom) / (botBoxTop - botBoxBottom) * 100 : na
+topBoxPctStr = str.tostring(math.round(topBoxPct, 1)) + "%"
+botBoxPctStr = str.tostring(math.round(botBoxPct, 1)) + "%"
+
+// เช็คว่า close อยู่ในกรอบหรือไม่
+closeInTop = close >= topBoxBottom and close <= topBoxTop
+closeInBot = close >= botBoxBottom and close <= botBoxTop
+
+var box   topBox       = na
+var box   botBox       = na
+var label lblTopTop    = na
+var label lblTopBot    = na
+var label lblBotTop    = na
+var label lblBotBot    = na
+var label lblTopName   = na
+var label lblBotName   = na
+// ── label ใหม่: แสดงราคา close และ % ภายในกรอบ real-time ──
+var label lblTopPrice  = na
+var label lblBotPrice  = na
+// ── label ใหม่: แสดงค่า Lock ที่กรอก ──
+var label lblLockHigh  = na
+var label lblLockLow   = na
+
+if barstate.islast
+    box.delete(topBox)
+    box.delete(botBox)
+    label.delete(lblTopTop)
+    label.delete(lblTopBot)
+    label.delete(lblBotTop)
+    label.delete(lblBotBot)
+    label.delete(lblTopName)
+    label.delete(lblBotName)
+    label.delete(lblTopPrice)
+    label.delete(lblBotPrice)
+    label.delete(lblLockHigh)
+    label.delete(lblLockLow)
+
+    // ══════════════ TOP BOX ══════════════
+    if showTopBox
+        // กรอบ
+        topBox := box.new(
+             left         = leftBar,
+             right        = rightBar,
+             top          = topBoxTop,
+             bottom       = topBoxBottom,
+             border_color = topColor,
+             border_width = 2,
+             bgcolor      = na)
+
+        // ป้ายราคาขอบกรอบ (ขวาออก)
+        lblTopTop  := label.new(labelBar, topBoxTop,    str.tostring(topBoxTop,    format.mintick), style=label.style_none, textcolor=topColor, color=na)
+        lblTopBot  := label.new(labelBar, topBoxBottom, str.tostring(topBoxBottom, format.mintick), style=label.style_none, textcolor=topColor, color=na)
+
+        // ชื่อกรอบ (มุมซ้ายบน) พร้อมราคา Top และ Bottom ของกรอบ
+        lockTopTxt = hasLockHigh ? " 🔒" : ""
+        lblTopName := label.new(leftBar, topBoxTop,
+             "TOP" + lockTopTxt + "\n▶ T: " + str.tostring(topBoxTop, format.mintick) + "\n▶ B: " + str.tostring(topBoxBottom, format.mintick),
+             style=label.style_label_lower_right, textcolor=topColor, color=color.new(color.black, 60))
+
+        // ── ป้าย real-time: ราคาปัจจุบัน + % ในกรอบ ──
+        topPriceLabel = "📍 " + str.tostring(close, format.mintick) + "  (" + topBoxPctStr + " ในกรอบ)"
+        topPriceBg    = closeInTop ? color.new(color.yellow, 20) : color.new(color.gray, 60)
+        topPriceTxt   = closeInTop ? color.black : color.white
+        // วาง label ตรงกลางกรอบ ด้านขวา
+        lblTopPrice := label.new(
+             x         = rightBar + 1,
+             y         = (topBoxTop + topBoxBottom) / 2,
+             text      = topPriceLabel,
+             style     = label.style_label_left,
+             textcolor = topPriceTxt,
+             color     = topPriceBg,
+             size      = size.small)
+
+        // ── ถ้ามี Lock High: แสดงเส้น marker สีแดงใน กรอบ ──
+        if hasLockHigh
+            lblLockHigh := label.new(
+                 x         = leftBar,
+                 y         = lockHighVal,
+                 text      = "🔒 " + str.tostring(lockHighVal, format.mintick),
+                 style     = label.style_label_right,
+                 textcolor = color.white,
+                 color     = lockColor,
+                 size      = size.small)
+
+    // ══════════════ BOTTOM BOX ══════════════
+    if showBotBox
+        // กรอบ
+        botBox := box.new(
+             left         = leftBar,
+             right        = rightBar,
+             top          = botBoxTop,
+             bottom       = botBoxBottom,
+             border_color = botColor,
+             border_width = 2,
+             bgcolor      = na)
+
+        // ป้ายราคาขอบกรอบ (ขวาออก)
+        lblBotTop  := label.new(labelBar, botBoxTop,    str.tostring(botBoxTop,    format.mintick), style=label.style_none, textcolor=botColor, color=na)
+        lblBotBot  := label.new(labelBar, botBoxBottom, str.tostring(botBoxBottom, format.mintick), style=label.style_none, textcolor=botColor, color=na)
+
+        // ชื่อกรอบ (มุมซ้ายล่าง) พร้อมราคา Top และ Bottom ของกรอบ
+        lockBotTxt = hasLockLow ? " 🔒" : ""
+        lblBotName := label.new(leftBar, botBoxBottom,
+             "BOT" + lockBotTxt + "\n▶ T: " + str.tostring(botBoxTop, format.mintick) + "\n▶ B: " + str.tostring(botBoxBottom, format.mintick),
+             style=label.style_label_upper_right, textcolor=botColor, color=color.new(color.black, 60))
+
+        // ── ป้าย real-time: ราคาปัจจุบัน + % ในกรอบ ──
+        botPriceLabel = "📍 " + str.tostring(close, format.mintick) + "  (" + botBoxPctStr + " ในกรอบ)"
+        botPriceBg    = closeInBot ? color.new(color.aqua, 20) : color.new(color.gray, 60)
+        botPriceTxt   = closeInBot ? color.black : color.white
+        lblBotPrice := label.new(
+             x         = rightBar + 1,
+             y         = (botBoxTop + botBoxBottom) / 2,
+             text      = botPriceLabel,
+             style     = label.style_label_left,
+             textcolor = botPriceTxt,
+             color     = botPriceBg,
+             size      = size.small)
+
+        // ── ถ้ามี Lock Low: แสดง marker สีแดงใน กรอบ ──
+        if hasLockLow
+            lblLockLow := label.new(
+                 x         = leftBar,
+                 y         = lockLowVal,
+                 text      = "🔒 " + str.tostring(lockLowVal, format.mintick),
+                 style     = label.style_label_right,
+                 textcolor = color.white,
+                 color     = lockColor,
+                 size      = size.small)
+
+////////////////////////////////////////////////////////////////////////////////
+// ===================== 3) MTF EMA Levels =====================================
+////////////////////////////////////////////////////////////////////////////////
+emaLabelOffset = input.int(20, "Label Offset (Bars)", minval=0, maxval=500, group="MTF EMA Levels")
+
+cFast = color.rgb(3, 138, 73)
+cMid  = color.rgb(122, 9, 9)
+c89   = color.rgb(201, 139, 5)
+c200  = color.rgb(163, 6, 150)
+c720  = color.rgb(0, 100, 255)
+
+groupM1  = "MTF EMA : M1"
+groupM5  = "MTF EMA : M5"
+groupM15 = "MTF EMA : M15"
+groupM30 = "MTF EMA : M30"
+groupH1  = "MTF EMA : H1"
+groupH4  = "MTF EMA : H4"
+groupD1  = "MTF EMA : D1"
+groupW1  = "MTF EMA : W1"
+
+m1_12  = input.bool(true, "Green",  group=groupM1),  m1_26  = input.bool(true, "Red",    group=groupM1),  m1_89  = input.bool(true, "Yellow", group=groupM1),  m1_200  = input.bool(true, "Purple", group=groupM1),  m1_720  = input.bool(true, "Blue", group=groupM1)
+m5_12  = input.bool(true, "Green",  group=groupM5),  m5_26  = input.bool(true, "Red",    group=groupM5),  m5_89  = input.bool(true, "Yellow", group=groupM5),  m5_200  = input.bool(true, "Purple", group=groupM5),  m5_720  = input.bool(true, "Blue", group=groupM5)
+m15_12 = input.bool(true, "Green",  group=groupM15), m15_26 = input.bool(true, "Red",    group=groupM15), m15_89 = input.bool(true, "Yellow", group=groupM15), m15_200 = input.bool(true, "Purple", group=groupM15), m15_720 = input.bool(true, "Blue", group=groupM15)
+m30_12 = input.bool(true, "Green",  group=groupM30), m30_26 = input.bool(true, "Red",    group=groupM30), m30_89 = input.bool(true, "Yellow", group=groupM30), m30_200 = input.bool(true, "Purple", group=groupM30), m30_720 = input.bool(true, "Blue", group=groupM30)
+h1_12  = input.bool(true, "Green",  group=groupH1),  h1_26  = input.bool(true, "Red",    group=groupH1),  h1_89  = input.bool(true, "Yellow", group=groupH1),  h1_200  = input.bool(true, "Purple", group=groupH1),  h1_720  = input.bool(true, "Blue", group=groupH1)
+h4_12  = input.bool(true, "Green",  group=groupH4),  h4_26  = input.bool(true, "Red",    group=groupH4),  h4_89  = input.bool(true, "Yellow", group=groupH4),  h4_200  = input.bool(true, "Purple", group=groupH4),  h4_720  = input.bool(true, "Blue", group=groupH4)
+d1_12  = input.bool(true, "Green",  group=groupD1),  d1_26  = input.bool(true, "Red",    group=groupD1),  d1_89  = input.bool(true, "Yellow", group=groupD1),  d1_200  = input.bool(true, "Purple", group=groupD1),  d1_720  = input.bool(true, "Blue", group=groupD1)
+w1_12  = input.bool(true, "Green",  group=groupW1),  w1_26  = input.bool(true, "Red",    group=groupW1),  w1_89  = input.bool(true, "Yellow", group=groupW1),  w1_200  = input.bool(true, "Purple", group=groupW1),  w1_720  = input.bool(true, "Blue", group=groupW1)
+
+[e_m1_12,  e_m1_26,  e_m1_89,  e_m1_200,  e_m1_720]  = request.security(syminfo.tickerid, "1",   [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_m5_12,  e_m5_26,  e_m5_89,  e_m5_200,  e_m5_720]  = request.security(syminfo.tickerid, "5",   [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_m15_12, e_m15_26, e_m15_89, e_m15_200, e_m15_720] = request.security(syminfo.tickerid, "15",  [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_m30_12, e_m30_26, e_m30_89, e_m30_200, e_m30_720] = request.security(syminfo.tickerid, "30",  [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_h1_12,  e_h1_26,  e_h1_89,  e_h1_200,  e_h1_720]  = request.security(syminfo.tickerid, "60",  [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_h4_12,  e_h4_26,  e_h4_89,  e_h4_200,  e_h4_720]  = request.security(syminfo.tickerid, "240", [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_d1_12,  e_d1_26,  e_d1_89,  e_d1_200,  e_d1_720]  = request.security(syminfo.tickerid, "D",   [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+[e_w1_12,  e_w1_26,  e_w1_89,  e_w1_200,  e_w1_720]  = request.security(syminfo.tickerid, "W",   [ta.ema(close,12), ta.ema(close,26), ta.ema(close,89), ta.ema(close,200), ta.ema(close,720)])
+
+var line[]  emaLines  = array.new_line()
+var label[] emaLabels = array.new_label()
+
+drawLevel(cond, price, txt, col) =>
+    if cond and not na(price)
+        array.push(emaLines,  line.new(bar_index, price, bar_index + 1, price, extend=extend.right, style=line.style_dotted, color=col, width=1))
+        array.push(emaLabels, label.new(bar_index + emaLabelOffset, price, txt + " : " + str.tostring(price, format.mintick), style=label.style_label_left, color=col, textcolor=color.white, size=size.small))
+
+if barstate.islast
+    for l in emaLines
+        line.delete(l)
+    for lb in emaLabels
+        label.delete(lb)
+    array.clear(emaLines)
+    array.clear(emaLabels)
+
+    drawLevel(m1_12,  e_m1_12,  "Green / M1",  cFast), drawLevel(m1_26,  e_m1_26,  "Red / M1",    cMid),  drawLevel(m1_89,  e_m1_89,  "Yellow / M1", c89),  drawLevel(m1_200,  e_m1_200,  "Purple / M1", c200), drawLevel(m1_720,  e_m1_720,  "Blue / M1",  c720)
+    drawLevel(m5_12,  e_m5_12,  "Green / M5",  cFast), drawLevel(m5_26,  e_m5_26,  "Red / M5",    cMid),  drawLevel(m5_89,  e_m5_89,  "Yellow / M5", c89),  drawLevel(m5_200,  e_m5_200,  "Purple / M5", c200), drawLevel(m5_720,  e_m5_720,  "Blue / M5",  c720)
+    drawLevel(m15_12, e_m15_12, "Green / M15", cFast), drawLevel(m15_26, e_m15_26, "Red / M15",   cMid),  drawLevel(m15_89, e_m15_89, "Yellow / M15",c89),  drawLevel(m15_200, e_m15_200, "Purple / M15",c200), drawLevel(m15_720, e_m15_720, "Blue / M15", c720)
+    drawLevel(m30_12, e_m30_12, "Green / M30", cFast), drawLevel(m30_26, e_m30_26, "Red / M30",   cMid),  drawLevel(m30_89, e_m30_89, "Yellow / M30",c89),  drawLevel(m30_200, e_m30_200, "Purple / M30",c200), drawLevel(m30_720, e_m30_720, "Blue / M30", c720)
+    drawLevel(h1_12,  e_h1_12,  "Green / H1",  cFast), drawLevel(h1_26,  e_h1_26,  "Red / H1",    cMid),  drawLevel(h1_89,  e_h1_89,  "Yellow / H1", c89),  drawLevel(h1_200,  e_h1_200,  "Purple / H1", c200), drawLevel(h1_720,  e_h1_720,  "Blue / H1",  c720)
+    drawLevel(h4_12,  e_h4_12,  "Green / H4",  cFast), drawLevel(h4_26,  e_h4_26,  "Red / H4",    cMid),  drawLevel(h4_89,  e_h4_89,  "Yellow / H4", c89),  drawLevel(h4_200,  e_h4_200,  "Purple / H4", c200), drawLevel(h4_720,  e_h4_720,  "Blue / H4",  c720)
+    drawLevel(d1_12,  e_d1_12,  "Green / D1",  cFast), drawLevel(d1_26,  e_d1_26,  "Red / D1",    cMid),  drawLevel(d1_89,  e_d1_89,  "Yellow / D1", c89),  drawLevel(d1_200,  e_d1_200,  "Purple / D1", c200), drawLevel(d1_720,  e_d1_720,  "Blue / D1",  c720)
+    drawLevel(w1_12,  e_w1_12,  "Green / W1",  cFast), drawLevel(w1_26,  e_w1_26,  "Red / W1",    cMid),  drawLevel(w1_89,  e_w1_89,  "Yellow / W1", c89),  drawLevel(w1_200,  e_w1_200,  "Purple / W1", c200), drawLevel(w1_720,  e_w1_720,  "Blue / W1",  c720)
+
+////////////////////////////////////////////////////////////////////////////////
+// ===================== 4) EMA Lines on Chart =================================
+////////////////////////////////////////////////////////////////////////////////
+groupEMAPlot = "EMA Lines (Current Timeframe)"
+showEMA12    = input.bool(true, "Show Green",  group=groupEMAPlot)
+showEMA26    = input.bool(true, "Show Red",    group=groupEMAPlot)
+showEMA89    = input.bool(true, "Show Yellow", group=groupEMAPlot)
+showEMA200   = input.bool(true, "Show Purple", group=groupEMAPlot)
+showEMA720   = input.bool(true, "Show Blue",   group=groupEMAPlot)
+emaLineWidth = input.int(2, "Line Width", minval=1, maxval=5, group=groupEMAPlot)
+
+plot(showEMA12  ? ta.ema(close, 12)  : na, "EMA 12",  color=cFast, linewidth=emaLineWidth)
+plot(showEMA26  ? ta.ema(close, 26)  : na, "EMA 26",  color=cMid,  linewidth=emaLineWidth)
+plot(showEMA89  ? ta.ema(close, 89)  : na, "EMA 89",  color=c89,   linewidth=emaLineWidth)
+plot(showEMA200 ? ta.ema(close, 200) : na, "EMA 200", color=c200,  linewidth=emaLineWidth)
+plot(showEMA720 ? ta.ema(close, 720) : na, "EMA 720", color=c720,  linewidth=emaLineWidth)
+
+// Webhook plots — ส่งค่ากรอบผ่าน Alert
+plot(topBoxTop,    "Box TOP High", display=display.none)
+plot(topBoxBottom, "Box TOP Low",  display=display.none)
+plot(botBoxTop,    "Box BOT High", display=display.none)
+plot(botBoxBottom, "Box BOT Low",  display=display.none)

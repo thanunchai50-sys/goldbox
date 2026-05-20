@@ -1,0 +1,40 @@
+// ─────────────────────────────────────────────────────────────
+//  ADDON: เพิ่มบรรทัดเหล่านี้ต่อท้าย COMBO_fixed.pine
+//  เพื่อให้ TradingView Alert ส่งค่ากรอบไปยัง Webhook ได้
+//
+//  plot_0 = topBoxTop    → Lock High Price ของ TOP BOX
+//  plot_1 = topBoxBottom → Lock Low Price ของ TOP BOX
+//  plot_2 = botBoxTop    → Lock High Price ของ BOT BOX
+//  plot_3 = botBoxBottom → Lock Low Price ของ BOT BOX
+// ─────────────────────────────────────────────────────────────
+
+// เพิ่มที่ท้ายสุดของ COMBO_fixed.pine:
+plot(topBoxTop,    "Box TOP High",    display=display.none)
+plot(topBoxBottom, "Box TOP Low",     display=display.none)
+plot(botBoxTop,    "Box BOT High",    display=display.none)
+plot(botBoxBottom, "Box BOT Low",     display=display.none)
+plot(close,        "Close Price",     display=display.none)
+
+// ── วิธีตั้ง Alert ใน TradingView ──────────────────────────────
+//
+// 1) กด Alert → เลือก indicator → Condition: "Any alert() function call"
+//    หรือตั้ง condition ตามชอบ เช่น Close crosses topBoxBottom
+//
+// 2) Alert Message (วาง JSON นี้ทั้งก้อน):
+/*
+{
+  "symbol":   "{{ticker}}",
+  "close":    {{close}},
+  "top_high": {{plot("Box TOP High")}},
+  "top_low":  {{plot("Box TOP Low")}},
+  "bot_high": {{plot("Box BOT High")}},
+  "bot_low":  {{plot("Box BOT Low")}},
+  "in_top":   false,
+  "in_bot":   false
+}
+*/
+//
+// 3) Webhook URL: https://YOUR-APP.railway.app/webhook
+//
+// 4) Frequency: ตั้งเป็น "Once Per Bar Close" หรือ "Once Per Bar"
+// ──────────────────────────────────────────────────────────────
